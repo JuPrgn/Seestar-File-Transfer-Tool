@@ -393,14 +393,114 @@ var scanTimer = null;
 var scanCompleted = false;
 var isTransferring = false;
 
+/* ===================== PERSISTED SETTINGS (Registry) ===================== */
+var REG_ROOT = "HKCU\\Software\\NickTonks_Seestar\\";
+
+function SaveSetting(name, value) {
+    try {
+        wsh.RegWrite(REG_ROOT + name, value, "REG_SZ");
+    } catch(e) {}
+}
+
+function LoadSetting(name, defaultValue) {
+    try {
+        var v = wsh.RegRead(REG_ROOT + name);
+        if (v === undefined || v === null) return defaultValue;
+        return v;
+    } catch(e) {
+        return defaultValue;
+    }
+}
+
+function GetSavedIPList() {
+    var raw = LoadSetting("SavedSeestarIPs", "");
+    if (raw === "") return [];
+    return raw.split(";");
+}
+
+function AddSavedIP(ip) {
+    var list = GetSavedIPList();
+    for (var i = 0; i < list.length; i++) {
+        if (list[i] === ip) return; // already saved
+    }
+    list.push(ip);
+    SaveSetting("SavedSeestarIPs", list.join(";"));
+}
+
+function RemoveSavedIP(ip) {
+    var list = GetSavedIPList();
+    var newList = [];
+    for (var i = 0; i < list.length; i++) {
+        if (list[i] !== ip) newList.push(list[i]);
+    }
+    SaveSetting("SavedSeestarIPs", newList.join(";"));
+}
+
+function ClearSavedIPs() {
+    SaveSetting("SavedSeestarIPs", "");
+}
+/* =========================================================================== */
+
 window.onload = function() {
     window.resizeTo(760, 930); // Initial size for Landing Page with Disclosure
+
+    // Pre-fill destination folder from last run
+    var savedFolder = LoadSetting("LastDestFolder", "");
+    if (savedFolder !== "") {
+        document.getElementById("destFolderPath").value = savedFolder;
+    }
 };
 
 function EnterApplication() {
     document.getElementById("landingScreen").style.display = "none";
     document.getElementById("mainAppContainer").style.display = "block";
     window.resizeTo(760, 930); // Resize for full application view
+
+    // Auto-load and reconnect previously saved Seestar IPs
+    LoadSavedIPsIntoUI();
+}
+
+function LoadSavedIPsIntoUI() {
+    var savedIPs = GetSavedIPList();
+    if (savedIPs.length === 0) return;
+
+    LogMessage("=================================================");
+    LogMessage("[INFO] Reconnecting " + savedIPs.length + " previously saved Seestar IP(s)...");
+    LogMessage("=================================================");
+
+    try {
+        wsh.Run('reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\LanmanWorkstation" /v AllowInsecureGuestAuth /t REG_DWORD /d 1 /f', 0, true);
+        wsh.Run('reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LanmanWorkstation\\Parameters" /v AllowInsecureGuestAuth /t REG_DWORD /d 1 /f', 0, true);
+    } catch(e) {}
+
+    var addedBox = document.getElementById("addedIpsDisplay");
+
+    for (var i = 0; i < savedIPs.length; i++) {
+        var ip = savedIPs[i].replace(/^\s+|\s+$/g, '');
+        if (ip === "" || discoveredIPs[ip]) continue;
+
+        deviceCount++;
+        discoveredIPs[ip] = ip;
+        ConnectDeviceShare(ip);
+        LogMessage("[SAVED] Reconnected Seestar IP: " + ip);
+
+        if (addedBox) {
+            addedBox.innerHTML += "<div>" + ip + " (Reconnected)</div>";
+        }
+    }
+
+    scanCompleted = true;
+    UpdateDeviceDisplay();
+    UpdateScanStatus("SCAN STATUS: LOADED FROM MEMORY (" + deviceCount + " ACTIVE)");
+}
+
+function ForgetSavedDevices() {
+    var response = wsh.Popup("Forget all saved Seestar IP addresses?\n\nThis only clears the saved memory - it does not affect the current session's connected devices.", 0, "Forget Saved IPs?", 4 + 32);
+    if (response === 6) {
+        ClearSavedIPs();
+        LogMessage("[INFO] Saved Seestar IP memory has been cleared.");
+        alert("Saved IP addresses have been forgotten.");
+    }
 }
 
 function UpdateScanStatus(msg) {
@@ -452,6 +552,7 @@ function BrowseDestinationFolder() {
             var folderItem = folder.Self;
             var path = folderItem.Path;
             document.getElementById("destFolderPath").value = path;
+            SaveSetting("LastDestFolder", path);
             LogMessage("[FOLDER] Selected destination path: " + path);
         }
     } catch(e) {
@@ -774,6 +875,7 @@ function RunAutoScan() {
                                         discoveredIPs[matchedIP] = matchedIP;
                                         UpdateDeviceDisplay();
                                         ConnectDeviceShare(matchedIP);
+                                        AddSavedIP(matchedIP);
                                     }
                                 }
                             } else {
@@ -876,6 +978,7 @@ function SaveSingleManualIP() {
                 deviceCount++;
                 discoveredIPs[vIp] = vIp;
                 ConnectDeviceShare(vIp);
+                AddSavedIP(vIp);
                 scanCompleted = true;
                 UpdateDeviceDisplay();
                 UpdateScanStatus("SCAN STATUS: MANUAL CONFIG (" + deviceCount + " ACTIVE)");
@@ -905,7 +1008,7 @@ function SaveSingleManualIP() {
 <div id="landingScreen">
     <div class="landing-card">
         <div class="landing-title">NICKTONKS_ASTROPHOTOGRAPHY</div>
-        <div class="landing-subtitle">Seestar Station Mode File Organiser & Copy Tool v1.2</div>
+        <div class="landing-subtitle">Seestar Station Mode File Organiser & Copy Tool v1.3</div>
         
         <!-- CONNECTION TYPES -->
         <div class="landing-row-section">
@@ -963,6 +1066,8 @@ function SaveSingleManualIP() {
                 <li><code>HKLM\SYSTEM\CurrentControlSet\Services\LanmanWorkstation\Parameters\AllowInsecureGuestAuth</code> (Set to 1)</li>
             </ul>
             Upon clicking <strong>Close and Exit</strong>, you will be prompted to automatically revert these Registry settings back to Windows defaults (0) to restore standard security policies.
+            <br><br>
+            The app also remembers your last used <strong>destination folder</strong> and any <strong>Seestar IP addresses</strong> you connect to, stored locally under <code>HKCU\Software\NickTonks_Seestar</code>, so they can be reconnected automatically next time.
         </div>
         
         <button class="btn-enter" onclick="EnterApplication()">Launch Transfer Tool</button>
@@ -978,7 +1083,7 @@ function SaveSingleManualIP() {
 <!-- ======================================================================= -->
 <div id="mainAppContainer" class="container">
 
-<h2>NICKTONKS_ASTROPHOTOGRAPHY<br>Seestar Station Mode File Organiser & Copy Tool v1.2</h2>
+<h2>NICKTONKS_ASTROPHOTOGRAPHY<br>Seestar Station Mode File Organiser & Copy Tool v1.3</h2>
 
 <div class="panel">
 <label class="section-label"><strong>1. Device Discovery:</strong></label><br>
@@ -986,6 +1091,7 @@ function SaveSingleManualIP() {
 <div class="btn-action-group">
 <button onclick="RunAutoScan()">Run Automatic Scan</button>
 <button onclick="ToggleManualBox()">Add Manual IPs</button>
+<button onclick="ForgetSavedDevices()">Forget Saved IPs</button>
 </div>
 
 <div id="manualBoxContainer">
@@ -995,7 +1101,7 @@ function SaveSingleManualIP() {
 <button class="btn-primary" onclick="SaveSingleManualIP()" style="width: 80px; font-size: 11px; padding: 6px;">Add IP</button>
 </div>
 
-<label style="font-size: 10px; color: #888;">Added IPs this session:</label>
+<label style="font-size: 10px; color: #888;">Added / Reconnected IPs this session:</label>
 <div id="addedIpsDisplay" style="background-color: #0d1221; border: 1px solid #1a2744; padding: 6px; font-family: 'Consolas', monospace; font-size: 11px; color: #00b386; margin-bottom: 8px; border-radius: 3px; max-height: 80px; overflow-y: auto;"></div>
 
 <div style="display: flex; justify-content: flex-end; margin-top: 8px;">
